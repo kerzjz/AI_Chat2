@@ -4,10 +4,10 @@ import urllib.parse
 import json
 import re
 
-# ===================== 全局配置（无密钥、全由用户输入） =====================
+# ===================== 页面设置 =====================
 st.set_page_config(page_title="多轮AI助手", page_icon="🤖", layout="centered")
 
-# 侧边栏：用户自己填写 API 信息
+# 侧边栏：用户自己填写 API（安全不硬编码）
 with st.sidebar:
     st.title("🔐 API 配置")
     CF_ACCOUNT_ID = st.text_input("Cloudflare Account ID", type="password")
@@ -19,7 +19,7 @@ with st.sidebar:
     KB_URL1 = st.text_input("知识库链接 1", value="https://jxsy.bearblog.dev/")
     KB_URL2 = st.text_input("知识库链接 2", value="")
 
-# 初始化对话历史
+# 多轮对话历史
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -68,7 +68,7 @@ def web_search(query):
 # ------------------------------
 def call_cf(prompt, account_id, api_token, model):
     if not account_id or not api_token:
-        return "请先在侧边栏填写 API 信息"
+        return "请先填写 API 信息"
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
     headers = {
@@ -84,46 +84,34 @@ def call_cf(prompt, account_id, api_token, model):
         return f"调用失败：{str(e)}"
 
 # ------------------------------
-# 判断是否需要联网
-# ------------------------------
-def is_search_needed(question, kb, account_id, api_token, model):
-    prompt = f"""只用中文回答。
-知识库：{kb}
-问题：{question}
-
-能回答则输出：不需要
-否则输出：需要
-"""
-    return call_cf(prompt, account_id, api_token, model).strip() == "需要"
-
-# ------------------------------
-# 构建多轮 prompt
+# 构建对话 Prompt
 # ------------------------------
 def build_prompt(question, kb, history, web_data=None):
-    hist_text = ""
+    hist = ""
     for m in history:
         prefix = "用户" if m["role"] == "user" else "助手"
-        hist_text += f"{prefix}：{m['content']}\n"
+        hist += f"{prefix}：{m['content']}\n"
 
-    base = f"""你是中文助手，只使用中文，自然简洁回答。
+    base = f"""你是中文助手，回答简洁自然，只说中文。
 知识库内容：
 {kb}
 
 对话历史：
-{hist_text}
+{hist}
 
-用户：{question}
+用户问题：{question}
 """
     if web_data:
         return f"""{base}
-以下是联网搜索结果：
+知识库中无相关内容，以下是联网搜索结果：
 {web_data}
-请根据搜索内容如实回答，不编造。
+
+请根据搜索内容如实回答，不要编造。
 """
     else:
-        return base
+        return base + "\n请根据知识库回答。如果知识库中没有相关内容，直接说：知识库无相关信息"
 
-# ===================== 界面：HTML 聊天框 =====================
+# ===================== 界面 =====================
 st.markdown("""
 <style>
 .chat-box {
@@ -151,10 +139,10 @@ st.markdown("""
     margin-bottom:8px;
 }
 </style>
-<h2 style="text-align:center;">🤖 多轮对话 · 知识库 + 搜索</h2>
+<h2 style="text-align:center;">🤖 多轮对话 · 智能切搜索</h2>
 """, unsafe_allow_html=True)
 
-# 渲染历史
+# 渲染聊天记录
 chat_box = '<div class="chat-box">'
 for m in st.session_state.messages:
     if m["role"] == "user":
@@ -170,17 +158,28 @@ user_q = st.text_input("输入问题：", label_visibility="collapsed", placehol
 if st.button("🚀 发送", use_container_width=True) and user_q:
     st.session_state.messages.append({"role": "user", "content": user_q})
 
-    with st.spinner("处理中..."):
+    with st.spinner("思考中..."):
         kb_text = load_kb(KB_URL1, KB_URL2)
-        need_web = is_search_needed(user_q, kb_text, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL)
+        prompt_kb = build_prompt(user_q, kb_text, st.session_state.messages[:-1])
+        ans_kb = call_cf(prompt_kb, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL)
+
+        # --------------------------
+        # 关键修复：
+        # 如果知识库说没有、不知道 → 自动切联网搜索
+        # --------------------------
+        no_info_keywords = [
+            "不在知识库", "知识库中没有", "知识库无相关",
+            "无法回答", "不知道", "请提供更多", "不在《金玄双游》"
+        ]
+
+        need_web = any(kw in ans_kb for kw in no_info_keywords)
 
         if need_web:
             web_data = web_search(user_q)
-            final_prompt = build_prompt(user_q, kb_text, st.session_state.messages, web_data)
-            ans = call_cf(final_prompt, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL) + "\n(来源：联网搜索)"
+            prompt_final = build_prompt(user_q, kb_text, st.session_state.messages[:-1], web_data)
+            ans = call_cf(prompt_final, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL) + "\n(来源：联网搜索)"
         else:
-            final_prompt = build_prompt(user_q, kb_text, st.session_state.messages)
-            ans = call_cf(final_prompt, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL) + "\n(来源：知识库)"
+            ans = ans_kb + "\n(来源：知识库)"
 
     st.session_state.messages.append({"role": "assistant", "content": ans})
     st.rerun()
