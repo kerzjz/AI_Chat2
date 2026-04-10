@@ -4,25 +4,27 @@ import urllib.parse
 import json
 import re
 
-# ==========================================
-# 【配置全部交给 Streamlit 界面输入】
-# ==========================================
-st.set_page_config(page_title="AI 搜索助手", page_icon="🤖", layout="centered")
+# ===================== 全局配置（无密钥、全由用户输入） =====================
+st.set_page_config(page_title="多轮AI助手", page_icon="🤖", layout="centered")
 
-# 侧边栏配置面板
+# 侧边栏：用户自己填写 API 信息
 with st.sidebar:
-    st.title("⚙️ API 配置")
-    CF_ACCOUNT_ID = st.text_input("Cloudflare Account ID", value="", type="password")
-    CF_API_TOKEN = st.text_input("Cloudflare API Token", value="", type="password")
-    MODEL = st.text_input("模型", value="@cf/meta/llama-3-8b-instruct")
+    st.title("🔐 API 配置")
+    CF_ACCOUNT_ID = st.text_input("Cloudflare Account ID", type="password")
+    CF_API_TOKEN = st.text_input("API Token", type="password")
+    MODEL = st.text_input("模型名称", value="@cf/meta/llama-3-8b-instruct")
 
-    st.markdown("---")
+    st.divider()
     st.title("📚 知识库")
-    KB_URL1 = st.text_input("知识库 URL 1", value="https://a.com/1")
-    KB_URL2 = st.text_input("知识库 URL 2", value="https://a.com/2")
+    KB_URL1 = st.text_input("知识库链接 1", value="https://jxsy.bearblog.dev/")
+    KB_URL2 = st.text_input("知识库链接 2", value="")
+
+# 初始化对话历史
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # ------------------------------
-# 清洗 HTML
+# 网页清洗
 # ------------------------------
 def clean_html(html):
     html = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL)
@@ -33,9 +35,11 @@ def clean_html(html):
     return html[:7000]
 
 # ------------------------------
-# 抓取网页
+# 抓取页面
 # ------------------------------
-def fetch(url):
+def fetch_page(url):
+    if not url:
+        return ""
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         req = urllib.request.Request(url, headers=headers)
@@ -49,23 +53,23 @@ def fetch(url):
 # ------------------------------
 @st.cache_data(ttl=3600)
 def load_kb(url1, url2):
-    return "\n---\n".join([fetch(url1), fetch(url2)])
+    return "\n---\n".join([fetch_page(url1), fetch_page(url2)])
 
 # ------------------------------
-# 搜索
+# 联网搜索
 # ------------------------------
 @st.cache_data(ttl=60)
-def search_web(query):
+def web_search(query):
     url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-    return fetch(url)
+    return fetch_page(url)
 
 # ------------------------------
 # 调用 CF AI
 # ------------------------------
-def cf_ai(prompt, account_id, api_token, model):
+def call_cf(prompt, account_id, api_token, model):
     if not account_id or not api_token:
-        return "请先填写 API 配置"
-    
+        return "请先在侧边栏填写 API 信息"
+
     url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
     headers = {
         "Authorization": f"Bearer {api_token}",
@@ -77,37 +81,49 @@ def cf_ai(prompt, account_id, api_token, model):
         with urllib.request.urlopen(req, timeout=20) as f:
             return json.load(f)["result"]["response"].strip()
     except Exception as e:
-        return f"AI 调用失败：{str(e)}"
+        return f"调用失败：{str(e)}"
 
 # ------------------------------
-# 主逻辑：知识库 → 搜索
+# 判断是否需要联网
 # ------------------------------
-def agent(query, account_id, api_token, model, kb):
-    prompt1 = f"""只用中文回答。
-以下是知识库内容：
+def is_search_needed(question, kb, account_id, api_token, model):
+    prompt = f"""只用中文回答。
+知识库：{kb}
+问题：{question}
+
+能回答则输出：不需要
+否则输出：需要
+"""
+    return call_cf(prompt, account_id, api_token, model).strip() == "需要"
+
+# ------------------------------
+# 构建多轮 prompt
+# ------------------------------
+def build_prompt(question, kb, history, web_data=None):
+    hist_text = ""
+    for m in history:
+        prefix = "用户" if m["role"] == "user" else "助手"
+        hist_text += f"{prefix}：{m['content']}\n"
+
+    base = f"""你是中文助手，只使用中文，自然简洁回答。
+知识库内容：
 {kb}
 
-问题：{query}
+对话历史：
+{hist_text}
 
-能回答直接回答，不能只输出：需要联网
+用户：{question}
 """
-    ans = cf_ai(prompt1, account_id, api_token, model)
-    if "需要联网" not in ans:
-        return "✅ 来自知识库", ans
-
-    web = search_web(query)
-    prompt2 = f"""只用中文回答，不编造。
-搜索内容：
-{web}
-
-问题：{query}
+    if web_data:
+        return f"""{base}
+以下是联网搜索结果：
+{web_data}
+请根据搜索内容如实回答，不编造。
 """
-    final = cf_ai(prompt2, account_id, api_token, model)
-    return "🌍 来自联网搜索", final
+    else:
+        return base
 
-# ==========================================
-# 【界面：纯 HTML 聊天 UI】
-# ==========================================
+# ===================== 界面：HTML 聊天框 =====================
 st.markdown("""
 <style>
 .chat-box {
@@ -134,40 +150,37 @@ st.markdown("""
     max-width:80%;
     margin-bottom:8px;
 }
-.source {
-    font-size:12px;
-    color:#666;
-    margin-bottom:4px;
-}
 </style>
-
-<h2 style="text-align:center;">🤖 智能助手（知识库 + 搜索）</h2>
+<h2 style="text-align:center;">🤖 多轮对话 · 知识库 + 搜索</h2>
 """, unsafe_allow_html=True)
 
-# 输入框
-question = st.text_input("输入你的问题：", label_visibility="collapsed", placeholder="请输入问题...")
-
-if st.button("🚀 发送", use_container_width=True):
-    if not question:
-        st.warning("请输入问题")
-    elif not CF_ACCOUNT_ID or not CF_API_TOKEN:
-        st.warning("请填写 API 信息（侧边栏）")
+# 渲染历史
+chat_box = '<div class="chat-box">'
+for m in st.session_state.messages:
+    if m["role"] == "user":
+        chat_box += f'<div class="msg-user">{m["content"]}</div>'
     else:
-        with st.spinner("处理中..."):
-            kb = load_kb(KB_URL1, KB_URL2)
-            source, answer = agent(
-                question,
-                CF_ACCOUNT_ID,
-                CF_API_TOKEN,
-                MODEL,
-                kb
-            )
+        chat_box += f'<div class="msg-bot">{m["content"]}</div>'
+chat_box += "</div>"
+st.markdown(chat_box, unsafe_allow_html=True)
 
-        # 输出 HTML 聊天界面
-        st.markdown(f"""
-        <div class="chat-box">
-            <div class="msg-user">{question}</div>
-            <div class="source">{source}</div>
-            <div class="msg-bot">{answer}</div>
-        </div>
-        """, unsafe_allow_html=True)
+# 输入
+user_q = st.text_input("输入问题：", label_visibility="collapsed", placeholder="输入问题...")
+
+if st.button("🚀 发送", use_container_width=True) and user_q:
+    st.session_state.messages.append({"role": "user", "content": user_q})
+
+    with st.spinner("处理中..."):
+        kb_text = load_kb(KB_URL1, KB_URL2)
+        need_web = is_search_needed(user_q, kb_text, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL)
+
+        if need_web:
+            web_data = web_search(user_q)
+            final_prompt = build_prompt(user_q, kb_text, st.session_state.messages, web_data)
+            ans = call_cf(final_prompt, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL) + "\n(来源：联网搜索)"
+        else:
+            final_prompt = build_prompt(user_q, kb_text, st.session_state.messages)
+            ans = call_cf(final_prompt, CF_ACCOUNT_ID, CF_API_TOKEN, MODEL) + "\n(来源：知识库)"
+
+    st.session_state.messages.append({"role": "assistant", "content": ans})
+    st.rerun()
