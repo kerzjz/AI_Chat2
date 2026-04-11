@@ -17,13 +17,34 @@ st.set_page_config(
 MODEL_LIST = [
     "@cf/moonshotai/kimi-k2.5",
     "@cf/zai-org/glm-4.7-flash",
-    "@cf/meta/llama-3-8b-instruct",
-    "@cf/google/gemma-2-9b-it",
+    "@cf/openai/gpt-oss-20b",
+    "@cf/openai/gpt-oss-120b",
     "@cf/qwen/qwen3-30b-a3b-fp8",
+    "@cf/meta/llama-4-scout-17b-16e-instruct",
+    "@cf/google/gemma-3-12b-it",
+    "@cf/qwen/qwq-32b",
+    "@cf/qwen/qwen2.5-coder-32b-instruct",
+    "@cf/meta/llama-guard-3-8b",
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/meta/llama-3.2-1b-instruct",
+    "@cf/meta/llama-3.2-3b-instruct",
+    "@cf/meta/llama-3.2-11b-vision-instruct",
+    "@cf/meta/llama-3.1-8b-instruct-awq",
+    "@cf/meta/llama-3.1-8b-instruct-fp8",
+    "@cf/meta/llama-3-8b-instruct-awq",
+    "@cf/meta/llama-3-8b-instruct",
+    "@cf/google/gemma-7b-it-lora",
+    "@cf/google/gemma-2b-it-lora",
+    "@cf/meta-llama/llama-2-7b-chat-hf-lora",
+    "@hf/google/gemma-7b-it",
+    "@cf/microsoft/phi-2",
+    "@cf/meta/llama-2-7b-chat-fp16",
+    "@cf/meta/llama-2-7b-chat-int8",
     "自定义模型"
 ]
 
-# ===================== 账号优先级 =====================
+# ===================== 账号优先级（严格按你的要求） =====================
 def get_final_credits():
     var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
@@ -68,19 +89,25 @@ def load_kb(url1, url2):
 def search(query):
     return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
 
-# ===================== 【终极修复】回答提取 =====================
+# ===================== 【核心修复】提取回答 + 过滤问号 =====================
 def extract_answer(res):
     try:
         result = res.get("result", res)
+        # 兼容所有模型格式
         if "choices" in result and isinstance(result["choices"], list) and len(result["choices"]) > 0:
-            return result["choices"][0].get("text", "").strip()
-        if "response" in result:
-            return str(result["response"]).strip()
-        return str(result).strip()
+            text = result["choices"][0].get("text", "").strip()
+        elif "response" in result:
+            text = str(result["response"]).strip()
+        else:
+            text = str(result).strip()
+
+        # ✅ 彻底过滤开头的问号、换行、冗余字符
+        text = re.sub(r"^[？?\n\s]+", "", text)
+        return text
     except:
         return str(res).strip()
 
-# ===================== 【核心修复】请求格式（加了 max_tokens ！！！） =====================
+# ===================== AI 调用（加max_tokens防截断） =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
@@ -96,10 +123,9 @@ def cf_ai(prompt, account_id, api_token, model):
             "Content-Type": "application/json"
         }
 
-        # ✅ ✅ ✅ 就是这里！！！加了 max_tokens=1024 永不截断！！
         data = json.dumps({
             "prompt": prompt,
-            "max_tokens": 1024,  # 标准值，不浪费token，不截断！
+            "max_tokens": 1024,
             "temperature": 0.7
         }).encode()
 
@@ -201,14 +227,29 @@ if st.button("🚀 发送", use_container_width=True) and prompt:
         file_content = st.session_state.file_content
         context = f"【知识库】\n{kb_content}\n\n【上传文件】\n{file_content}"
 
-        check_ans, _ = cf_ai(f"只用中文。能回答输出有答案，否则无答案。\n{context}\n问题：{prompt}", account, token, used_model)
+        # ✅ 优化prompt，彻底杜绝问号
+        check_prompt = f"""你是中文助手，只根据知识库回答。
+能回答就输出：有答案
+不能回答就输出：无答案
+不要输出任何其他内容，不要加问号。
+
+知识库：{context}
+问题：{prompt}"""
+        check_ans, _ = cf_ai(check_prompt, account, token, used_model)
         
         if "无答案" in check_ans:
             web = search(prompt)
-            ans, raw_json = cf_ai(f"只用中文如实完整回答。\n{context}\n搜索：{web}\n问题：{prompt}", account, token, used_model)
+            final_prompt = f"""你是中文助手，只根据搜索结果如实回答，不要加任何前缀、问号。
+知识库：{context}
+搜索结果：{web}
+问题：{prompt}"""
+            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
             ans += "\n(来源：联网搜索)"
         else:
-            ans, raw_json = cf_ai(f"只用中文完整回答。\n{context}\n问题：{prompt}", account, token, used_model)
+            final_prompt = f"""你是中文助手，只根据知识库完整回答，不要加任何前缀、问号。
+知识库：{context}
+问题：{prompt}"""
+            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
             ans += "\n(来源：知识库)"
 
     idx = len(st.session_state.messages)
