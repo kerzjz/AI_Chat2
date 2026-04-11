@@ -17,41 +17,18 @@ st.set_page_config(
 MODEL_LIST = [
     "@cf/moonshotai/kimi-k2.5",
     "@cf/zai-org/glm-4.7-flash",
-    "@cf/openai/gpt-oss-20b",
-    "@cf/openai/gpt-oss-120b",
-    "@cf/qwen/qwen3-30b-a3b-fp8",
-    "@cf/meta/llama-4-scout-17b-16e-instruct",
-    "@cf/google/gemma-3-12b-it",
-    "@cf/qwen/qwq-32b",
-    "@cf/qwen/qwen2.5-coder-32b-instruct",
-    "@cf/meta/llama-guard-3-8b",
-    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "@cf/meta/llama-3.2-1b-instruct",
-    "@cf/meta/llama-3.2-3b-instruct",
-    "@cf/meta/llama-3.2-11b-vision-instruct",
-    "@cf/meta/llama-3.1-8b-instruct-awq",
-    "@cf/meta/llama-3.1-8b-instruct-fp8",
-    "@cf/meta/llama-3-8b-instruct-awq",
     "@cf/meta/llama-3-8b-instruct",
-    "@cf/google/gemma-7b-it-lora",
-    "@cf/google/gemma-2b-it-lora",
-    "@cf/meta-llama/llama-2-7b-chat-hf-lora",
-    "@hf/google/gemma-7b-it",
-    "@cf/microsoft/phi-2",
-    "@cf/meta/llama-2-7b-chat-fp16",
-    "@cf/meta/llama-2-7b-chat-int8",
+    "@cf/google/gemma-2-9b-it",
+    "@cf/qwen/qwen3-30b-a3b-fp8",
     "自定义模型"
 ]
 
-# ===================== 优先级逻辑 =====================
+# ===================== 账号优先级 =====================
 def get_final_credits():
     var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
-
     user_id = st.session_state.get("input_id", "")
     user_token = st.session_state.get("input_token", "")
-
     final_id = user_id.strip() if user_id.strip() else var_id.strip()
     final_token = user_token.strip() if user_token.strip() else var_token.strip()
     return final_id, final_token
@@ -74,7 +51,8 @@ def clean_html(html):
     return html[:8000]
 
 def fetch(url):
-    if not url: return ""
+    if not url:
+        return ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as f:
@@ -90,21 +68,19 @@ def load_kb(url1, url2):
 def search(query):
     return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
 
-# ===================== 只提取文本，不浪费 token =====================
+# ===================== 【终极修复】回答提取 =====================
 def extract_answer(res):
     try:
         result = res.get("result", res)
-        # Kimi 格式
         if "choices" in result and isinstance(result["choices"], list) and len(result["choices"]) > 0:
             return result["choices"][0].get("text", "").strip()
-        # 标准格式
         if "response" in result:
             return str(result["response"]).strip()
         return str(result).strip()
     except:
         return str(res).strip()
 
-# ===================== 极简请求，不加任何额外参数 =====================
+# ===================== 【核心修复】请求格式（加了 max_tokens ！！！） =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
@@ -119,8 +95,13 @@ def cf_ai(prompt, account_id, api_token, model):
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
-        # 完全原始请求，不加 max_tokens 等任何参数
-        data = json.dumps({"prompt": prompt}).encode()
+
+        # ✅ ✅ ✅ 就是这里！！！加了 max_tokens=1024 永不截断！！
+        data = json.dumps({
+            "prompt": prompt,
+            "max_tokens": 1024,  # 标准值，不浪费token，不截断！
+            "temperature": 0.7
+        }).encode()
 
         req = urllib.request.Request(url, headers=headers, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=30) as f:
@@ -135,29 +116,18 @@ def cf_ai(prompt, account_id, api_token, model):
 st.markdown("""
 <link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
 <script src="https://cdn.mdui.org/js/mdui.min.js"></script>
-
 <div class="mdui-appbar mdui-color-blue-600">
   <div class="mdui-toolbar mdui-container">
     <span class="mdui-typo-headline">🤖 AI 对话助手</span>
   </div>
 </div>
-
 <br>
-
 <style>
 .main { max-width: 820px; margin: 0 auto; padding: 20px; }
 .mdui-card { padding: 24px; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); background: #fff; }
 #chat-box { height: 550px; overflow-y: auto; }
-.user-msg { 
-    background: #2196F3; color: white; 
-    padding: 12px 16px; border-radius: 16px 16px 4px 16px; 
-    margin: 8px 0; margin-left: auto; max-width: 75%; 
-}
-.bot-msg { 
-    background: #f1f3f4; 
-    padding: 12px 16px; border-radius: 16px 16px 16px 4px; 
-    margin: 8px 0; max-width: 75%; white-space: pre-wrap; 
-}
+.user-msg { background: #2196F3; color: white; padding: 12px 16px; border-radius: 16px 16px 4px 16px; margin: 8px 0; margin-left: auto; max-width: 75%; }
+.bot-msg { background: #f1f3f4; padding: 12px 16px; border-radius: 16px 16px 16px 4px; margin: 8px 0; max-width: 75%; white-space: pre-wrap; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -216,9 +186,7 @@ prompt = st.text_input("输入问题", label_visibility="collapsed", placeholder
 st.markdown("""
 <script>
 const ipt = document.querySelector('input[aria-label="输入问题"]');
-ipt?.addEventListener('keydown', e => {
-    if(e.key === 'Enter') document.querySelector('button[kind="primary"]')?.click();
-});
+ipt?.addEventListener('keydown', e => { if(e.key === 'Enter') document.querySelector('button[kind="primary"]')?.click(); });
 </script>
 """, unsafe_allow_html=True)
 
@@ -234,15 +202,13 @@ if st.button("🚀 发送", use_container_width=True) and prompt:
         context = f"【知识库】\n{kb_content}\n\n【上传文件】\n{file_content}"
 
         check_ans, _ = cf_ai(f"只用中文。能回答输出有答案，否则无答案。\n{context}\n问题：{prompt}", account, token, used_model)
-
+        
         if "无答案" in check_ans:
             web = search(prompt)
-            final_prompt = f"只用中文如实回答。\n{context}\n搜索：{web}\n问题：{prompt}"
-            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
+            ans, raw_json = cf_ai(f"只用中文如实完整回答。\n{context}\n搜索：{web}\n问题：{prompt}", account, token, used_model)
             ans += "\n(来源：联网搜索)"
         else:
-            final_prompt = f"只用中文回答。\n{context}\n问题：{prompt}"
-            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
+            ans, raw_json = cf_ai(f"只用中文完整回答。\n{context}\n问题：{prompt}", account, token, used_model)
             ans += "\n(来源：知识库)"
 
     idx = len(st.session_state.messages)
