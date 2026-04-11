@@ -3,7 +3,7 @@ import urllib.request
 import urllib.parse
 import json
 import re
-import datetime
+from datetime import datetime
 
 # ===================== 页面设置 =====================
 st.set_page_config(
@@ -46,15 +46,12 @@ MODEL_LIST = [
 
 # ===================== 核心优先级逻辑 =====================
 def get_final_credits():
-    # 1. 读取变量
     var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
 
-    # 2. 用户输入
     user_id = st.session_state.get("input_id", "")
     user_token = st.session_state.get("input_token", "")
 
-    # 3. 优先级：用户填写 > 变量
     final_id = user_id.strip() if user_id.strip() else var_id.strip()
     final_token = user_token.strip() if user_token.strip() else var_token.strip()
     
@@ -114,7 +111,6 @@ def cf_ai(prompt, account_id, api_token, model):
         with urllib.request.urlopen(req, timeout=30) as f:
             res = json.load(f)
             
-            # ✅ 修复：兼容所有 Cloudflare 返回格式
             if "result" in res and "response" in res["result"]:
                 return res["result"]["response"]
             elif "result" in res:
@@ -192,7 +188,6 @@ with st.sidebar:
 # ===================== 主界面 =====================
 st.markdown('<div class="main">', unsafe_allow_html=True)
 
-# 模型 + 按钮
 col1, col2, col3 = st.columns([3,1,1])
 with col1:
     model_sel = st.selectbox("模型", MODEL_LIST)
@@ -203,7 +198,11 @@ with col2:
 with col3:
     if st.session_state.messages:
         txt = "\n\n".join([f"{'用户' if m['role']=='user' else '助手'}：{m['content']}" for m in st.session_state.messages])
-        st.download_button("导出对话", txt, f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt")
+        st.download_button(
+            "导出对话",
+            txt,
+            f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt"
+        )
 
 custom_model = st.text_input("自定义模型") if model_sel == "自定义模型" else ""
 
@@ -229,7 +228,6 @@ if st.button("发送", use_container_width=True) and prompt:
         file_content = st.session_state.file_content
         context = f"知识库：{kb_content}\n文件：{file_content}"
 
-        # 回答逻辑
         check = cf_ai(f"只用中文。能回答输出有答案，否则无答案。\n{context}\n问题：{prompt}", account, token, used_model)
         if "无答案" in check:
             web = search(prompt)
