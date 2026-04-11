@@ -7,8 +7,8 @@ from datetime import datetime
 
 # ===================== 页面设置 =====================
 st.set_page_config(
-    page_title="AI 对话助手",
-    page_icon="🤖",
+    page_title="Kzz AI 2",
+    page_icon="K",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -208,6 +208,7 @@ st.markdown("""
 # ===================== 侧边栏 =====================
 with st.sidebar:
     st.markdown('<div class="mdui-card" style="background:#1e1e1e;border:1px solid #333;">', unsafe_allow_html=True)
+    st.title("Kzz AI 2")
     st.title("⚙️ 设置")
     st.text_input("Account ID", key="input_id", type="password")
     st.text_input("API Token", key="input_token", type="password")
