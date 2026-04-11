@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ===================== 页面设置 =====================
 st.set_page_config(
-    page_title="AI 助手",
+    page_title="AI 对话助手",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -44,7 +44,7 @@ MODEL_LIST = [
     "自定义模型"
 ]
 
-# ===================== 账号优先级（严格按你的要求） =====================
+# ===================== 账号优先级 =====================
 def get_final_credits():
     var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
@@ -89,25 +89,23 @@ def load_kb(url1, url2):
 def search(query):
     return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
 
-# ===================== 【核心修复】提取回答 + 过滤问号 =====================
+# ===================== 提取回答 + 过滤问号 =====================
 def extract_answer(res):
     try:
         result = res.get("result", res)
-        # 兼容所有模型格式
         if "choices" in result and isinstance(result["choices"], list) and len(result["choices"]) > 0:
             text = result["choices"][0].get("text", "").strip()
         elif "response" in result:
             text = str(result["response"]).strip()
         else:
             text = str(result).strip()
-
-        # ✅ 彻底过滤开头的问号、换行、冗余字符
+        # 过滤开头问号、换行
         text = re.sub(r"^[？?\n\s]+", "", text)
         return text
     except:
         return str(res).strip()
 
-# ===================== AI 调用（加max_tokens防截断） =====================
+# ===================== AI 调用 =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
@@ -122,7 +120,6 @@ def cf_ai(prompt, account_id, api_token, model):
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
-
         data = json.dumps({
             "prompt": prompt,
             "max_tokens": 1024,
@@ -138,28 +135,79 @@ def cf_ai(prompt, account_id, api_token, model):
     except Exception as e:
         return f"❌ 调用失败：{str(e)}", {}
 
-# ===================== MDUI 界面 =====================
+# ===================== 【核心修复】MDUI 布局 + 消除空白 =====================
 st.markdown("""
 <link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
 <script src="https://cdn.mdui.org/js/mdui.min.js"></script>
+
 <div class="mdui-appbar mdui-color-blue-600">
   <div class="mdui-toolbar mdui-container">
     <span class="mdui-typo-headline">🤖 AI 对话助手</span>
   </div>
 </div>
-<br>
+
 <style>
-.main { max-width: 820px; margin: 0 auto; padding: 20px; }
-.mdui-card { padding: 24px; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); background: #fff; }
-#chat-box { height: 550px; overflow-y: auto; }
-.user-msg { background: #2196F3; color: white; padding: 12px 16px; border-radius: 16px 16px 4px 16px; margin: 8px 0; margin-left: auto; max-width: 75%; }
-.bot-msg { background: #f1f3f4; padding: 12px 16px; border-radius: 16px 16px 16px 4px; margin: 8px 0; max-width: 75%; white-space: pre-wrap; }
+/* 重置 Streamlit 深色模式冲突，消除空白 */
+.stApp { background: #121212 !important; }
+.main { 
+    max-width: 900px; 
+    margin: 20px auto 0 auto;  /* 顶部只留20px，消除大空白 */
+    padding: 0 20px;
+}
+/* 模型选择栏紧凑布局 */
+.model-bar { 
+    display: flex; 
+    gap: 16px; 
+    align-items: center; 
+    margin-bottom: 16px;
+}
+/* 聊天框高度自适应，不挤压上方 */
+.chat-box {
+    background: #1e1e1e;
+    border-radius: 16px;
+    padding: 20px;
+    max-height: 60vh;  /* 用视口高度，不固定死550px */
+    overflow-y: auto;
+    margin-bottom: 16px;
+    border: 1px solid #333;
+}
+.user-msg {
+    background: #2196F3;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 16px 16px 4px 16px;
+    margin: 8px 0;
+    margin-left: auto;
+    max-width: 75%;
+}
+.bot-msg {
+    background: #2d2d2d;
+    color: #fff;
+    padding: 12px 16px;
+    border-radius: 16px 16px 16px 4px;
+    margin: 8px 0;
+    max-width: 75%;
+    white-space: pre-wrap;
+}
+/* 输入框样式 */
+.stTextInput > div > input {
+    border-radius: 12px;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    color: #fff;
+}
+.stButton > button {
+    border-radius: 12px;
+    background: #2196F3;
+    color: white;
+    border: none;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ===================== 侧边栏 =====================
 with st.sidebar:
-    st.markdown('<div class="mdui-card">', unsafe_allow_html=True)
+    st.markdown('<div class="mdui-card" style="background:#1e1e1e;border:1px solid #333;">', unsafe_allow_html=True)
     st.title("⚙️ 设置")
     st.text_input("Account ID", key="input_id", type="password")
     st.text_input("API Token", key="input_token", type="password")
@@ -175,26 +223,27 @@ with st.sidebar:
         st.success("✅ 已加载")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ===================== 主界面 =====================
+# ===================== 主界面（紧凑布局，消除空白） =====================
 st.markdown('<div class="main">', unsafe_allow_html=True)
 
-col1, col2, col3 = st.columns([3,1,1])
+# 模型选择 + 按钮（紧凑排列，不占大空间）
+col1, col2, col3 = st.columns([3,1,1], gap="small")
 with col1:
-    model_sel = st.selectbox("模型", MODEL_LIST)
+    model_sel = st.selectbox("模型", MODEL_LIST, label_visibility="collapsed")
 with col2:
-    if st.button("🧹 清空对话"):
+    if st.button("🧹 清空对话", use_container_width=True):
         st.session_state.messages = []
         st.session_state.json_logs = {}
         st.rerun()
 with col3:
     if st.session_state.messages:
         txt = "\n\n".join([f"{'用户' if m['role']=='user' else '助手'}：{m['content']}" for m in st.session_state.messages])
-        st.download_button("💾 导出对话", txt, f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt")
+        st.download_button("💾 导出对话", txt, f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt", use_container_width=True)
 
-custom_model = st.text_input("自定义模型") if model_sel == "自定义模型" else ""
+custom_model = st.text_input("自定义模型", label_visibility="collapsed", placeholder="输入自定义模型名") if model_sel == "自定义模型" else ""
 
-# 聊天区域
-st.markdown('<div class="mdui-card" id="chat-box">', unsafe_allow_html=True)
+# 聊天区域（自适应高度，不挤压上方）
+st.markdown('<div class="chat-box">', unsafe_allow_html=True)
 for i, msg in enumerate(st.session_state.messages):
     if msg["role"] == "user":
         st.markdown(f'<div class="user-msg">{msg["content"]}</div>', unsafe_allow_html=True)
@@ -227,7 +276,6 @@ if st.button("🚀 发送", use_container_width=True) and prompt:
         file_content = st.session_state.file_content
         context = f"【知识库】\n{kb_content}\n\n【上传文件】\n{file_content}"
 
-        # ✅ 优化prompt，彻底杜绝问号
         check_prompt = f"""你是中文助手，只根据知识库回答。
 能回答就输出：有答案
 不能回答就输出：无答案
