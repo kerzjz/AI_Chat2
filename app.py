@@ -7,13 +7,13 @@ import datetime
 
 # ===================== 页面设置 =====================
 st.set_page_config(
-    page_title="AI 对话助手",
+    page_title="AI 助手",
     page_icon="🤖",
     layout="wide",
-    initial_sidebar_state="collapsed"  # 默认隐藏侧边栏
+    initial_sidebar_state="collapsed"
 )
 
-# ===================== 模型列表（剔除向量，全部保留） =====================
+# ===================== 模型列表 =====================
 MODEL_LIST = [
     "@cf/moonshotai/kimi-k2.5",
     "@cf/zai-org/glm-4.7-flash",
@@ -44,21 +44,21 @@ MODEL_LIST = [
     "自定义模型"
 ]
 
-# ===================== 优先级逻辑（你要的三情况） =====================
-def get_effective_account_token():
-    # 1. 从 secrets 读取变量
-    var_account = st.secrets.get("CF_ACCOUNT_ID", "")
+# ===================== 核心优先级逻辑 =====================
+def get_final_credits():
+    # 1. 读取变量
+    var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
 
-    # 2. 用户在界面填写的
-    user_account = st.session_state.get("input_account", "")
+    # 2. 用户输入
+    user_id = st.session_state.get("input_id", "")
     user_token = st.session_state.get("input_token", "")
 
     # 3. 优先级：用户填写 > 变量
-    final_account = user_account.strip() if user_account.strip() else var_account.strip()
+    final_id = user_id.strip() if user_id.strip() else var_id.strip()
     final_token = user_token.strip() if user_token.strip() else var_token.strip()
-
-    return final_account, final_token
+    
+    return final_id, final_token
 
 # ===================== 状态初始化 =====================
 if "messages" not in st.session_state:
@@ -68,175 +68,176 @@ if "file_content" not in st.session_state:
 
 # ===================== 工具函数 =====================
 def clean_html(html):
-    html = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL)
-    html = re.sub(r"<style.*?</style>", " ", html, flags=re.DOTALL)
+    html = re.sub(r"<script.*?</script>", "", html, flags=re.DOTALL)
+    html = re.sub(r"<style.*?</style>", "", html, flags=re.DOTALL)
     html = re.sub(r"<[^>]+>", " ", html)
-    html = re.sub(r"&[a-zA-Z0-9#]+;", " ", html, flags=re.I)
+    html = re.sub(r"&[a-z0-9#]+;", " ", html, flags=re.I)
     html = re.sub(r"\s+", " ", html).strip()
     return html[:8000]
 
-def fetch_url(url):
+def fetch(url):
     if not url:
         return ""
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10) as f:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as f:
             return clean_html(f.read().decode("utf-8", "ignore"))
     except:
         return ""
 
 @st.cache_data(ttl=3600)
 def load_kb(url1, url2):
-    return "\n---\n".join([fetch_url(url1), fetch_url(url2)])
+    return "\n".join([fetch(url1), fetch(url2)])
 
 @st.cache_data(ttl=60)
-def bing_search(query):
-    url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-    return fetch_url(url)
+def search(query):
+    return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
 
+# ===================== 【修复】AI 调用 =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
-        return "🔒 请先配置 Account ID 和 API Token"
+        return "请填写 CF Account ID 和 API Token"
 
     model = model.strip()
     if not model.startswith(("@cf/", "@hf/")):
-        model = f"@cf/{model}"
+        model = "@cf/" + model
 
     try:
-        api_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
         headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
         data = json.dumps({"prompt": prompt}).encode()
-        req = urllib.request.Request(api_url, headers=headers, data=data, method="POST")
+        req = urllib.request.Request(url, headers=headers, data=data, method="POST")
+        
         with urllib.request.urlopen(req, timeout=30) as f:
-            return json.load(f)["result"]["response"].strip()
-    except Exception as e:
-        return f"❌ 调用失败：{str(e)}"
+            res = json.load(f)
+            
+            # ✅ 修复：兼容所有 Cloudflare 返回格式
+            if "result" in res and "response" in res["result"]:
+                return res["result"]["response"]
+            elif "result" in res:
+                return str(res["result"])
+            else:
+                return str(res)
 
-# ===================== MDUI 样式 =====================
+    except Exception as e:
+        return f"调用失败：{str(e)}"
+
+# ===================== 【真正 MDUI】 =====================
 st.markdown("""
+<link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
+<script src="https://cdn.mdui.org/js/mdui.min.js"></script>
+
+<div class="mdui-appbar mdui-color-blue-600">
+  <div class="mdui-toolbar mdui-container">
+    <span class="mdui-typo-headline">🤖 AI 对话助手</span>
+  </div>
+</div>
+
+<br><br>
+
 <style>
-* { font-family: 'Roboto', 'Segoe UI', sans-serif; }
-.chat-wrapper { max-width: 820px; margin: 0 auto; padding: 20px; }
-.chat-box {
-    background: #fff; border-radius: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-    padding: 24px; height: 540px; overflow-y: auto; margin-bottom: 16px;
+.main {
+    max-width: 800px;
+    margin: 0 auto;
 }
-.msg-user {
-    background: #1976D2; color: #fff;
-    padding: 12px 16px; border-radius: 18px 18px 4px 18px;
-    max-width: 75%; margin-left: auto; margin-bottom: 12px;
+.mdui-card {
+    padding: 20px;
+    margin-bottom: 16px;
 }
-.msg-bot {
-    background: #f1f3f4; color: #202124;
-    padding: 12px 16px; border-radius: 18px 18px 18px 4px;
-    max-width: 75%; margin-bottom: 12px; white-space: pre-wrap;
+#chat-box {
+    height: 550px;
+    overflow-y: auto;
+}
+.user-msg {
+    background: #2196F3;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 16px 16px 4px 16px;
+    margin: 8px 0;
+    margin-left: auto;
+    max-width: 75%;
+}
+.bot-msg {
+    background: #f1f3f4;
+    padding: 12px 16px;
+    border-radius: 16px 16px 16px 4px;
+    margin: 8px 0;
+    max-width: 75%;
+    white-space: pre-wrap;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== 侧边栏配置 =====================
+# ===================== 侧边栏 =====================
 with st.sidebar:
+    st.markdown('<div class="mdui-card">', unsafe_allow_html=True)
     st.title("⚙️ 设置")
-    st.text_input("Account ID", key="input_account", type="password")
+    st.text_input("Account ID", key="input_id", type="password")
     st.text_input("API Token", key="input_token", type="password")
-
     st.divider()
     st.title("📚 知识库")
-    kb1 = st.text_input("知识库地址 1", value="https://jxsy.bearblog.dev/")
-    kb2 = st.text_input("知识库地址 2", value="")
-
+    kb1 = st.text_input("链接1", value="https://jxsy.bearblog.dev/")
+    kb2 = st.text_input("链接2", value="")
     st.divider()
     st.title("📎 上传文件")
-    file = st.file_uploader("上传 txt/md", type=["txt", "md", "json"])
-    if file:
-        st.session_state.file_content = file.read().decode("utf-8", errors="ignore")
-        st.success("✅ 已加载")
+    uploaded = st.file_uploader("TXT/MD", type=["txt", "md"])
+    if uploaded:
+        st.session_state.file_content = uploaded.read().decode("utf-8", "ignore")
+        st.success("已上传")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ===================== 主界面 =====================
-st.markdown("<h2 style='text-align:center; margin-bottom:24px'>🤖 AI 对话助手</h2>", unsafe_allow_html=True)
+st.markdown('<div class="main">', unsafe_allow_html=True)
 
+# 模型 + 按钮
 col1, col2, col3 = st.columns([3,1,1])
 with col1:
-    model_sel = st.selectbox("选择模型", MODEL_LIST)
+    model_sel = st.selectbox("模型", MODEL_LIST)
 with col2:
-    if st.button("🧹 清空对话"):
+    if st.button("清空对话"):
         st.session_state.messages = []
         st.rerun()
 with col3:
     if st.session_state.messages:
-        chat_text = "\n\n".join([
-            f"{'用户' if m['role']=='user' else '助手'}：{m['content']}"
-            for m in st.session_state.messages
-        ])
-        st.download_button(
-            "💾 导出对话",
-            chat_text,
-            f"对话_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.txt",
-            use_container_width=True
-        )
+        txt = "\n\n".join([f"{'用户' if m['role']=='user' else '助手'}：{m['content']}" for m in st.session_state.messages])
+        st.download_button("导出对话", txt, f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt")
 
-custom_model = ""
-if model_sel == "自定义模型":
-    custom_model = st.text_input("输入模型名称")
+custom_model = st.text_input("自定义模型") if model_sel == "自定义模型" else ""
 
-# 渲染聊天
-with st.container():
-    st.markdown('<div class="chat-wrapper"><div class="chat-box">', unsafe_allow_html=True)
-    for m in st.session_state.messages:
-        if m["role"] == "user":
-            st.markdown(f'<div class="msg-user">{m["content"]}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="msg-bot">{m["content"]}</div>', unsafe_allow_html=True)
-    st.markdown("</div></div>", unsafe_allow_html=True)
+# 聊天区域
+st.markdown('<div class="mdui-card" id="chat-box">', unsafe_allow_html=True)
+for msg in st.session_state.messages:
+    if msg["role"] == "user":
+        st.markdown(f'<div class="user-msg">{msg["content"]}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="bot-msg">{msg["content"]}</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
-# 输入
-question = st.text_input("输入问题", placeholder="发送消息...", label_visibility="collapsed")
+# 输入框
+prompt = st.text_input("输入问题", label_visibility="collapsed", placeholder="输入消息...")
 
-if st.button("🚀 发送", use_container_width=True) and question:
-    st.session_state.messages.append({"role": "user", "content": question})
+if st.button("发送", use_container_width=True) and prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
     used_model = custom_model if model_sel == "自定义模型" else model_sel
-    account, token = get_effective_account_token()
+    account, token = get_final_credits()
 
-    with st.spinner("思考中..."):
-        kb_text = load_kb(kb1, kb2)
-        file_text = st.session_state.file_content
-        context = f"【知识库】\n{kb_text}\n\n【上传文件】\n{file_text}"
+    with st.spinner("处理中..."):
+        kb_content = load_kb(kb1, kb2)
+        file_content = st.session_state.file_content
+        context = f"知识库：{kb_content}\n文件：{file_content}"
 
-        # 判断是否需要联网
-        check_prompt = f"""只用中文回答。
-上下文：
-{context}
-
-问题：{question}
-
-如果能回答，只输出：有答案
-否则只输出：无答案
-"""
-        check_result = cf_ai(check_prompt, account, token, used_model)
-
-        if "无答案" in check_result:
-            web = bing_search(question)
-            final_prompt = f"""你是中文助手，简洁如实回答，不编造。
-上下文：
-{context}
-
-搜索结果：
-{web}
-
-问题：{question}
-"""
-            ans = cf_ai(final_prompt, account, token, used_model) + "\n(来源：联网搜索)"
+        # 回答逻辑
+        check = cf_ai(f"只用中文。能回答输出有答案，否则无答案。\n{context}\n问题：{prompt}", account, token, used_model)
+        if "无答案" in check:
+            web = search(prompt)
+            ans = cf_ai(f"只用中文如实回答。\n{context}\n搜索：{web}\n问题：{prompt}", account, token, used_model) + "\n(来源：联网)"
         else:
-            final_prompt = f"""你是中文助手，简洁回答。
-上下文：
-{context}
-
-问题：{question}
-"""
-            ans = cf_ai(final_prompt, account, token, used_model) + "\n(来源：知识库/文件)"
+            ans = cf_ai(f"只用中文回答。\n{context}\n问题：{prompt}", account, token, used_model) + "\n(来源：知识库)"
 
     st.session_state.messages.append({"role": "assistant", "content": ans})
     st.rerun()
+
+st.markdown('</div>', unsafe_allow_html=True)
