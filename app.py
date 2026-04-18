@@ -4,11 +4,35 @@ import urllib.parse
 import json
 import re
 from datetime import datetime
+import requests
+
+# ===================== 无头浏览器工具 =====================
+def browser_get_content(url: str) -> str:
+    try:
+        resp = requests.post(
+            "https://browser.xingoxu.com/api",
+            json={"action": "content", "url": url},
+            timeout=20
+        )
+        return resp.json().get("text", "获取内容失败")
+    except:
+        return "获取网页失败"
+
+def browser_get_screenshot(url: str) -> str:
+    try:
+        resp = requests.post(
+            "https://browser.xingoxu.com/api",
+            json={"action": "screenshot", "url": url},
+            timeout=20
+        )
+        return resp.json().get("image", "截图失败")
+    except:
+        return "截图失败"
 
 # ===================== 页面设置 =====================
 st.set_page_config(
-    page_title="Kzz AI 2",
-    page_icon="K",
+    page_title="Kzz AI Agent",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -17,30 +41,10 @@ st.set_page_config(
 MODEL_LIST = [
     "@cf/moonshotai/kimi-k2.5",
     "@cf/zai-org/glm-4.7-flash",
-    "@cf/openai/gpt-oss-20b",
-    "@cf/openai/gpt-oss-120b",
     "@cf/qwen/qwen3-30b-a3b-fp8",
     "@cf/meta/llama-4-scout-17b-16e-instruct",
     "@cf/google/gemma-3-12b-it",
-    "@cf/qwen/qwq-32b",
-    "@cf/qwen/qwen2.5-coder-32b-instruct",
-    "@cf/meta/llama-guard-3-8b",
     "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "@cf/meta/llama-3.2-1b-instruct",
-    "@cf/meta/llama-3.2-3b-instruct",
-    "@cf/meta/llama-3.2-11b-vision-instruct",
-    "@cf/meta/llama-3.1-8b-instruct-awq",
-    "@cf/meta/llama-3.1-8b-instruct-fp8",
-    "@cf/meta/llama-3-8b-instruct-awq",
-    "@cf/meta/llama-3-8b-instruct",
-    "@cf/google/gemma-7b-it-lora",
-    "@cf/google/gemma-2b-it-lora",
-    "@cf/meta-llama/llama-2-7b-chat-hf-lora",
-    "@hf/google/gemma-7b-it",
-    "@cf/microsoft/phi-2",
-    "@cf/meta/llama-2-7b-chat-fp16",
-    "@cf/meta/llama-2-7b-chat-int8",
     "自定义模型"
 ]
 
@@ -59,8 +63,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "file_content" not in st.session_state:
     st.session_state.file_content = ""
-if "json_logs" not in st.session_state:
-    st.session_state.json_logs = {}
+if "agent_thoughts" not in st.session_state:
+    st.session_state.agent_thoughts = []
 
 # ===================== 工具函数 =====================
 def clean_html(html):
@@ -72,8 +76,7 @@ def clean_html(html):
     return html[:8000]
 
 def fetch(url):
-    if not url:
-        return ""
+    if not url: return ""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as f:
@@ -85,21 +88,16 @@ def fetch(url):
 def load_kb(url1, url2):
     return "\n".join([fetch(url1), fetch(url2)])
 
-@st.cache_data(ttl=60)
-def search(query):
-    return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
-
-# ===================== 提取回答 + 过滤问号 =====================
+# ===================== 提取回答 =====================
 def extract_answer(res):
     try:
         result = res.get("result", res)
-        if "choices" in result and isinstance(result["choices"], list) and len(result["choices"]) > 0:
+        if "choices" in result and len(result["choices"]) > 0:
             text = result["choices"][0].get("text", "").strip()
         elif "response" in result:
             text = str(result["response"]).strip()
         else:
             text = str(result).strip()
-        # 过滤开头问号、换行
         text = re.sub(r"^[？?\n\s]+", "", text)
         return text
     except:
@@ -109,201 +107,159 @@ def extract_answer(res):
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
-
     model = model.strip()
     if not model.startswith(("@cf/", "@hf/")):
         model = f"@cf/{model}"
-
     try:
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "prompt": prompt,
-            "max_tokens": 1024,
-            "temperature": 0.7
-        }).encode()
-
+        headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+        data = json.dumps({"prompt": prompt, "max_tokens": 1200, "temperature": 0.6}).encode()
         req = urllib.request.Request(url, headers=headers, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=30) as f:
             res = json.load(f)
-
         return extract_answer(res), res
-
     except Exception as e:
         return f"❌ 调用失败：{str(e)}", {}
 
-# ===================== 【核心修复】MDUI 布局 + 消除空白 =====================
+# ===================== 【AGENT 核心】AI 自主思考 + 调用工具 =====================
+def agent_run(user_input, account, token, model, kb_content, file_content):
+    thoughts = []
+    thoughts.append("🧠 开始分析用户问题...")
+    st.session_state.agent_thoughts = thoughts
+
+    # 1. 判断是否需要联网
+    thoughts.append("🔍 判断：是否需要打开网页？")
+    st.session_state.agent_thoughts = thoughts
+    judge_prompt = f"""
+请判断问题是否需要【联网/打开网页】。
+需要 → 输出：需要
+不需要 → 输出：不需要
+
+问题：{user_input}
+"""
+    judge_ans, _ = cf_ai(judge_prompt, account, token, model)
+    thoughts.append(f"✅ 判断结果：{judge_ans}")
+    st.session_state.agent_thoughts = thoughts
+
+    # 2. 需要 → 自动调用浏览器
+    if "需要" in judge_ans:
+        thoughts.append("🌍 准备提取目标网址...")
+        st.session_state.agent_thoughts = thoughts
+
+        url_prompt = f"从问题中提取网址，没有就生成必应搜索链接。只输出链接：{user_input}"
+        url, _ = cf_ai(url_prompt, account, token, model)
+        if not url.startswith("http"):
+            url = f"https://www.bing.com/search?q={urllib.parse.quote(user_input)}"
+
+        thoughts.append(f"🔗 目标网址：{url}")
+        st.session_state.agent_thoughts = thoughts
+
+        thoughts.append("🚀 调用无头浏览器读取内容...")
+        st.session_state.agent_thoughts = thoughts
+        web_content = browser_get_content(url)
+
+        thoughts.append("📷 调用无头浏览器截图...")
+        st.session_state.agent_thoughts = thoughts
+        screenshot = browser_get_screenshot(url)
+
+        thoughts.append("📝 总结网页内容...")
+        st.session_state.agent_thoughts = thoughts
+
+        final_prompt = f"""
+根据网页内容回答问题，简洁准确。
+网页内容：{web_content}
+问题：{user_input}
+"""
+        ans, raw_json = cf_ai(final_prompt, account, token, model)
+        ans += f"\n\n🖼️ 截图：{screenshot}\n🔗 来源：{url}"
+        thoughts.append("✅ 完成！")
+        st.session_state.agent_thoughts = thoughts
+        return ans, raw_json
+
+    # 3. 不需要 → 本地回答
+    else:
+        thoughts.append("💡 使用本地知识回答...")
+        st.session_state.agent_thoughts = thoughts
+        context = f"知识库：{kb_content}\n文件：{file_content}"
+        final_prompt = f"{context}\n问题：{user_input}"
+        ans, raw_json = cf_ai(final_prompt, account, token, model)
+        thoughts.append("✅ 完成！")
+        st.session_state.agent_thoughts = thoughts
+        return ans, raw_json
+
+# ===================== 界面 =====================
 st.markdown("""
 <link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
-<script src="https://cdn.mdui.org/js/mdui.min.js"></script>
-
 <div class="mdui-appbar mdui-color-blue-600">
   <div class="mdui-toolbar mdui-container">
-    <span class="mdui-typo-headline">🤖 AI 对话助手</span>
+    <span class="mdui-typo-headline">🤖 Kzz AI Agent（自主调用浏览器）</span>
   </div>
 </div>
-
 <style>
-/* 重置 Streamlit 深色模式冲突，消除空白 */
 .stApp { background: #121212 !important; }
-.main { 
-    max-width: 900px; 
-    margin: 20px auto 0 auto;  /* 顶部只留20px，消除大空白 */
-    padding: 0 20px;
-}
-/* 模型选择栏紧凑布局 */
-.model-bar { 
-    display: flex; 
-    gap: 16px; 
-    align-items: center; 
-    margin-bottom: 16px;
-}
-/* 聊天框高度自适应，不挤压上方 */
-.chat-box {
-    background: #1e1e1e;
-    border-radius: 16px;
-    padding: 20px;
-    max-height: 60vh;  /* 用视口高度，不固定死550px */
-    overflow-y: auto;
-    margin-bottom: 16px;
-    border: 1px solid #333;
-}
-.user-msg {
-    background: #2196F3;
-    color: white;
-    padding: 12px 16px;
-    border-radius: 16px 16px 4px 16px;
-    margin: 8px 0;
-    margin-left: auto;
-    max-width: 75%;
-}
-.bot-msg {
-    background: #2d2d2d;
-    color: #fff;
-    padding: 12px 16px;
-    border-radius: 16px 16px 16px 4px;
-    margin: 8px 0;
-    max-width: 75%;
-    white-space: pre-wrap;
-}
-/* 输入框样式 */
-.stTextInput > div > input {
-    border-radius: 12px;
-    background: #1e1e1e;
-    border: 1px solid #333;
-    color: #fff;
-}
-.stButton > button {
-    border-radius: 12px;
-    background: #2196F3;
-    color: white;
-    border: none;
-}
+.main { max-width: 900px; margin: 20px auto; padding:0 20px; }
+.chat-box { background:#1e1e1e; border-radius:16px; padding:20px; max-height:55vh; overflow-y:auto; margin-bottom:16px; }
+.thought-box { background:#181818; border-radius:12px; padding:12px; margin-bottom:12px; border:1px solid #333; color:#aaa; }
+.user-msg { background:#2196F3; color:white; padding:12px 16px; border-radius:16px 16px 4px 16px; margin:8px 0; margin-left:auto; max-width:75%; }
+.bot-msg { background:#2d2d2d; color:#fff; padding:12px 16px; border-radius:16px 16px 16px 4px; margin:8px 0; max-width:75%; white-space:pre-wrap; }
 </style>
 """, unsafe_allow_html=True)
 
 # ===================== 侧边栏 =====================
 with st.sidebar:
-    st.title("Kzz AI 2")
-    st.markdown('<div class="mdui-card" style="background:#1e1e1e;border:1px solid #333;">', unsafe_allow_html=True)
     st.title("⚙️ 设置")
     st.text_input("Account ID", key="input_id", type="password")
     st.text_input("API Token", key="input_token", type="password")
-    st.divider()
     st.title("📚 知识库")
-    kb1 = st.text_input("链接 1", value="")
-    kb2 = st.text_input("链接 2", value="")
-    st.divider()
-    st.title("📎 上传文件")
-    uploaded = st.file_uploader("TXT/MD", type=["txt", "md"])
-    if uploaded:
-        st.session_state.file_content = uploaded.read().decode("utf-8", errors="ignore")
-        st.success("✅ 已加载")
-    st.markdown('</div>', unsafe_allow_html=True)
+    kb1 = st.text_input("链接1")
+    kb2 = st.text_input("链接2")
 
-# ===================== 主界面（紧凑布局，消除空白） =====================
+# ===================== 主界面 =====================
 st.markdown('<div class="main">', unsafe_allow_html=True)
 
-# 模型选择 + 按钮（紧凑排列，不占大空间）
-col1, col2, col3 = st.columns([3,1,1], gap="small")
+col1, col2 = st.columns([4, 2])
 with col1:
     model_sel = st.selectbox("模型", MODEL_LIST, label_visibility="collapsed")
 with col2:
     if st.button("🧹 清空对话", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.json_logs = {}
+        st.session_state.agent_thoughts = []
         st.rerun()
-with col3:
-    if st.session_state.messages:
-        txt = "\n\n".join([f"{'用户' if m['role']=='user' else '助手'}：{m['content']}" for m in st.session_state.messages])
-        st.download_button("💾 导出对话", txt, f"对话_{datetime.now().strftime('%Y%m%d%H%M')}.txt", use_container_width=True)
 
-custom_model = st.text_input("自定义模型", label_visibility="collapsed", placeholder="输入自定义模型名") if model_sel == "自定义模型" else ""
+custom_model = st.text_input("自定义模型", placeholder="模型名", label_visibility="collapsed") if model_sel == "自定义模型" else model_sel
 
-# 聊天区域（自适应高度，不挤压上方）
+# --- 【Agent 思考面板】---
+if st.session_state.agent_thoughts:
+    with st.container():
+        st.markdown('<div class="thought-box">', unsafe_allow_html=True)
+        st.caption("🤖 Agent 思考过程：")
+        for t in st.session_state.agent_thoughts:
+            st.write(t)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# 聊天区域
 st.markdown('<div class="chat-box">', unsafe_allow_html=True)
-for i, msg in enumerate(st.session_state.messages):
+for msg in st.session_state.messages:
     if msg["role"] == "user":
         st.markdown(f'<div class="user-msg">{msg["content"]}</div>', unsafe_allow_html=True)
     else:
         st.markdown(f'<div class="bot-msg">{msg["content"]}</div>', unsafe_allow_html=True)
-        if str(i) in st.session_state.json_logs:
-            with st.expander("📄 查看完整JSON", expanded=False):
-                st.code(st.session_state.json_logs[str(i)], language="json")
 st.markdown('</div>', unsafe_allow_html=True)
 
-# 输入框
-prompt = st.text_input("输入问题", label_visibility="collapsed", placeholder="输入消息...", key="user_prompt")
+prompt = st.text_input("消息", placeholder="输入问题，AI 会自主决策是否打开网页...", label_visibility="collapsed")
 
-# 回车发送
-st.markdown("""
-<script>
-const ipt = document.querySelector('input[aria-label="输入问题"]');
-ipt?.addEventListener('keydown', e => { if(e.key === 'Enter') document.querySelector('button[kind="primary"]')?.click(); });
-</script>
-""", unsafe_allow_html=True)
-
-# 发送逻辑
+# ===================== 发送 =====================
 if st.button("🚀 发送", use_container_width=True) and prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
-    used_model = custom_model if model_sel == "自定义模型" else model_sel
     account, token = get_final_credits()
+    used_model = custom_model
 
-    with st.spinner("处理中..."):
+    with st.spinner(""):
         kb_content = load_kb(kb1, kb2)
         file_content = st.session_state.file_content
-        context = f"【知识库】\n{kb_content}\n\n【上传文件】\n{file_content}"
+        ans, raw_json = agent_run(prompt, account, token, used_model, kb_content, file_content)
 
-        check_prompt = f"""你是中文助手，只根据知识库回答。
-能回答就输出：有答案
-不能回答就输出：无答案
-不要输出任何其他内容，不要加问号。
-
-知识库：{context}
-问题：{prompt}"""
-        check_ans, _ = cf_ai(check_prompt, account, token, used_model)
-        
-        if "无答案" in check_ans:
-            web = search(prompt)
-            final_prompt = f"""你是中文助手，只根据搜索结果如实回答，不要加任何前缀、问号。
-知识库：{context}
-搜索结果：{web}
-问题：{prompt}"""
-            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
-            ans += "\n(来源：联网搜索)"
-        else:
-            final_prompt = f"""你是中文助手，只根据知识库完整回答，不要加任何前缀、问号。
-知识库：{context}
-问题：{prompt}"""
-            ans, raw_json = cf_ai(final_prompt, account, token, used_model)
-            ans += "\n(来源：知识库)"
-
-    idx = len(st.session_state.messages)
     st.session_state.messages.append({"role": "assistant", "content": ans})
-    st.session_state.json_logs[str(idx)] = json.dumps(raw_json, ensure_ascii=False, indent=2)
     st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
