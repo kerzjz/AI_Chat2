@@ -44,7 +44,7 @@ MODEL_LIST = [
     "自定义模型"
 ]
 
-# ===================== 【你的原版：AI 优先级 100% 不动】=====================
+# ===================== 账号优先级 =====================
 def get_final_credits():
     var_id = st.secrets.get("CF_ACCOUNT_ID", "")
     var_token = st.secrets.get("CF_API_TOKEN", "")
@@ -53,36 +53,6 @@ def get_final_credits():
     final_id = user_id.strip() if user_id.strip() else var_id.strip()
     final_token = user_token.strip() if user_token.strip() else var_token.strip()
     return final_id, final_token
-
-# ===================== 【新增：浏览器 完全独立 优先级】=====================
-def get_browser_credits():
-    # 浏览器 独立配置，和 AI 一毛钱关系没有
-    b_id = st.secrets.get("CF_BROWSER_ACCOUNT_ID", "")
-    b_token = st.secrets.get("CF_BROWSER_API_TOKEN", "")
-    return b_id, b_token
-
-# ===================== 【新增：独立浏览器调用，绝不碰 AI 逻辑】=====================
-def cf_browser(url):
-    account_id, api_token = get_browser_credits()
-    if not account_id or not api_token:
-        return ""
-    try:
-        api = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering"
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "url": url,
-            "waitFor": 1000,
-            "output": "markdown"
-        }).encode()
-        req = urllib.request.Request(api, headers=headers, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as f:
-            res = json.load(f)
-            return res.get("result", {}).get("markdown", "")
-    except:
-        return ""
 
 # ===================== 状态初始化 =====================
 if "messages" not in st.session_state:
@@ -115,9 +85,44 @@ def fetch(url):
 def load_kb(url1, url2):
     return "\n".join([fetch(url1), fetch(url2)])
 
+# ===================== 【新增：独立Cloudflare无头浏览器API】与AI API完全分离，不共用逻辑 =====================
 @st.cache_data(ttl=60)
-def search(query):
-    return fetch(f"https://www.bing.com/search?q={urllib.parse.quote(query)}")
+def cf_browser(query, account_id, api_token):
+    """
+    独立的Cloudflare无头浏览器渲染API
+    与原cf_ai函数完全隔离，仅复用账号信息，逻辑/端点/参数均不共用
+    """
+    if not account_id or not api_token:
+        return "🔒 请填写 CF Account ID 和 API Token"
+    
+    search_url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
+    try:
+        # Cloudflare 官方浏览器渲染API端点（独立于AI运行API）
+        api_endpoint = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/browser-rendering"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        
+        # 浏览器渲染请求参数（独立配置，与AI无关）
+        payload = json.dumps({
+            "url": search_url,
+            "waitUntil": "networkIdle",  # 等待动态页面加载完成
+            "timeout": 15000
+        }).encode()
+
+        req = urllib.request.Request(api_endpoint, headers=headers, data=payload, method="POST")
+        with urllib.request.urlopen(req, timeout=25) as f:
+            res = json.load(f)
+
+        # 提取浏览器渲染后的纯文本内容
+        if res.get("success") and "result" in res:
+            return clean_html(res["result"].get("content", ""))
+        else:
+            return f"❌ 浏览器API调用失败：{str(res.get('errors', '未知错误'))}"
+
+    except Exception as e:
+        return f"❌ 无头浏览器渲染失败：{str(e)}"
 
 # ===================== 提取回答 + 过滤问号 =====================
 def extract_answer(res):
@@ -129,12 +134,13 @@ def extract_answer(res):
             text = str(result["response"]).strip()
         else:
             text = str(result).strip()
+        # 过滤开头问号、换行
         text = re.sub(r"^[？?\n\s]+", "", text)
         return text
     except:
         return str(res).strip()
 
-# ===================== AI 调用（原版不动）=====================
+# ===================== 原AI调用（完全不动） =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
@@ -164,7 +170,7 @@ def cf_ai(prompt, account_id, api_token, model):
     except Exception as e:
         return f"❌ 调用失败：{str(e)}", {}
 
-# ===================== 【你的原版样式 100% 不动】=====================
+# ===================== 【核心修复】MDUI 布局 + 消除空白（完全不动） =====================
 st.markdown("""
 <link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
 <script src="https://cdn.mdui.org/js/mdui.min.js"></script>
@@ -176,23 +182,26 @@ st.markdown("""
 </div>
 
 <style>
+/* 重置 Streamlit 深色模式冲突，消除空白 */
 .stApp { background: #121212 !important; }
 .main { 
     max-width: 900px; 
-    margin: 20px auto 0 auto;
+    margin: 20px auto 0 auto;  /* 顶部只留20px，消除大空白 */
     padding: 0 20px;
 }
+/* 模型选择栏紧凑布局 */
 .model-bar { 
     display: flex; 
     gap: 16px; 
     align-items: center; 
     margin-bottom: 16px;
 }
+/* 聊天框高度自适应，不挤压上方 */
 .chat-box {
     background: #1e1e1e;
     border-radius: 16px;
     padding: 20px;
-    max-height: 60vh;
+    max-height: 60vh;  /* 用视口高度，不固定死550px */
     overflow-y: auto;
     margin-bottom: 16px;
     border: 1px solid #333;
@@ -215,6 +224,7 @@ st.markdown("""
     max-width: 75%;
     white-space: pre-wrap;
 }
+/* 输入框样式 */
 .stTextInput > div > input {
     border-radius: 12px;
     background: #1e1e1e;
@@ -230,7 +240,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== 侧边栏（原版不动）=====================
+# ===================== 侧边栏（完全不动） =====================
 with st.sidebar:
     st.title("Kzz AI 2")
     st.markdown('<div class="mdui-card" style="background:#1e1e1e;border:1px solid #333;">', unsafe_allow_html=True)
@@ -249,9 +259,10 @@ with st.sidebar:
         st.success("✅ 已加载")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ===================== 主界面（原版不动）=====================
+# ===================== 主界面（完全不动） =====================
 st.markdown('<div class="main">', unsafe_allow_html=True)
 
+# 模型选择 + 按钮
 col1, col2, col3 = st.columns([3,1,1], gap="small")
 with col1:
     model_sel = st.selectbox("模型", MODEL_LIST, label_visibility="collapsed")
@@ -267,6 +278,7 @@ with col3:
 
 custom_model = st.text_input("自定义模型", label_visibility="collapsed", placeholder="输入自定义模型名") if model_sel == "自定义模型" else ""
 
+# 聊天区域
 st.markdown('<div class="chat-box">', unsafe_allow_html=True)
 for i, msg in enumerate(st.session_state.messages):
     if msg["role"] == "user":
@@ -278,8 +290,10 @@ for i, msg in enumerate(st.session_state.messages):
                 st.code(st.session_state.json_logs[str(i)], language="json")
 st.markdown('</div>', unsafe_allow_html=True)
 
+# 输入框
 prompt = st.text_input("输入问题", label_visibility="collapsed", placeholder="输入消息...", key="user_prompt")
 
+# 回车发送
 st.markdown("""
 <script>
 const ipt = document.querySelector('input[aria-label="输入问题"]');
@@ -287,7 +301,7 @@ ipt?.addEventListener('keydown', e => { if(e.key === 'Enter') document.querySele
 </script>
 """, unsafe_allow_html=True)
 
-# ===================== 发送逻辑（原版 100% 不动 + 仅替换搜索为浏览器）=====================
+# 发送逻辑（仅替换静态搜索为无头浏览器API，其余完全不动）
 if st.button("🚀 发送", use_container_width=True) and prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     used_model = custom_model if model_sel == "自定义模型" else model_sel
@@ -308,15 +322,14 @@ if st.button("🚀 发送", use_container_width=True) and prompt:
         check_ans, _ = cf_ai(check_prompt, account, token, used_model)
         
         if "无答案" in check_ans:
-            # 👇 这里：独立浏览器调用，和AI账号无关
-            search_url = f"https://www.bing.com/search?q={urllib.parse.quote(prompt)}"
-            web = cf_browser(search_url) or search(prompt)
+            # ===================== 【替换：调用无头浏览器API，而非静态抓取】 =====================
+            web = cf_browser(prompt, account, token)
             final_prompt = f"""你是中文助手，只根据搜索结果如实回答，不要加任何前缀、问号。
 知识库：{context}
 搜索结果：{web}
 问题：{prompt}"""
             ans, raw_json = cf_ai(final_prompt, account, token, used_model)
-            ans += "\n(来源：CF浏览器)"
+            ans += "\n(来源：Cloudflare无头浏览器搜索)"
         else:
             final_prompt = f"""你是中文助手，只根据知识库完整回答，不要加任何前缀、问号。
 知识库：{context}
