@@ -4,34 +4,10 @@ import urllib.parse
 import json
 import re
 from datetime import datetime
-import requests
-
-# ===================== 无头浏览器工具 =====================
-def browser_get_content(url: str) -> str:
-    try:
-        resp = requests.post(
-            "https://browser.xingoxu.com/api",
-            json={"action": "content", "url": url},
-            timeout=20
-        )
-        return resp.json().get("text", "获取内容失败")
-    except:
-        return "获取网页失败"
-
-def browser_get_screenshot(url: str) -> str:
-    try:
-        resp = requests.post(
-            "https://browser.xingoxu.com/api",
-            json={"action": "screenshot", "url": url},
-            timeout=20
-        )
-        return resp.json().get("image", "截图失败")
-    except:
-        return "截图失败"
 
 # ===================== 页面设置 =====================
 st.set_page_config(
-    page_title="Kzz AI Agent",
+    page_title="Kzz AI Agent + CF Browser",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -75,20 +51,56 @@ def clean_html(html):
     html = re.sub(r"\s+", " ", html).strip()
     return html[:8000]
 
-def fetch(url):
-    if not url: return ""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as f:
-            return clean_html(f.read().decode("utf-8", "ignore"))
-    except:
-        return ""
-
 @st.cache_data(ttl=3600)
 def load_kb(url1, url2):
-    return "\n".join([fetch(url1), fetch(url2)])
+    return ""
 
-# ===================== 提取回答 =====================
+# ===================== 【官方】Cloudflare 无头浏览器 =====================
+# 这是 Cloudflare 官方 Browser Rendering API（真实无头浏览器）
+def cf_browser_fetch(url, account_id, api_token):
+    try:
+        url_api = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        data = json.dumps({
+            "url": url,
+            "waitFor": 1000,
+            "output": "markdown"
+        }).encode()
+
+        req = urllib.request.Request(url_api, headers=headers, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as f:
+            res = json.load(f)
+            return res.get("result", {}).get("markdown", "获取失败")
+    except Exception as e:
+        return f"CF浏览器调用失败：{str(e)}"
+
+def cf_browser_screenshot(url, account_id, api_token):
+    try:
+        url_api = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        data = json.dumps({
+            "url": url,
+            "waitFor": 1000,
+            "screenshot": True
+        }).encode()
+
+        req = urllib.request.Request(url_api, headers=headers, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as f:
+            res = json.load(f)
+            img_b64 = res.get("result", {}).get("screenshot", "")
+            if img_b64:
+                return f"data:image/png;base64,{img_b64}"
+        return "截图失败"
+    except:
+        return "截图失败"
+
+# ===================== AI 调用 =====================
 def extract_answer(res):
     try:
         result = res.get("result", res)
@@ -103,7 +115,6 @@ def extract_answer(res):
     except:
         return str(res).strip()
 
-# ===================== AI 调用 =====================
 def cf_ai(prompt, account_id, api_token, model):
     if not account_id or not api_token:
         return "🔒 请填写 CF Account ID 和 API Token", {}
@@ -121,17 +132,15 @@ def cf_ai(prompt, account_id, api_token, model):
     except Exception as e:
         return f"❌ 调用失败：{str(e)}", {}
 
-# ===================== 【AGENT 核心】AI 自主思考 + 调用工具 =====================
-def agent_run(user_input, account, token, model, kb_content, file_content):
+# ===================== 【AGENT 核心】自主调用 CF 无头浏览器 =====================
+def agent_run(user_input, account, token, model):
     thoughts = []
-    thoughts.append("🧠 开始分析用户问题...")
+    thoughts.append("🧠 Agent 分析问题...")
     st.session_state.agent_thoughts = thoughts
 
-    # 1. 判断是否需要联网
-    thoughts.append("🔍 判断：是否需要打开网页？")
-    st.session_state.agent_thoughts = thoughts
+    # 判断是否需要浏览器
     judge_prompt = f"""
-请判断问题是否需要【联网/打开网页】。
+判断问题是否需要【打开网页/联网】。
 需要 → 输出：需要
 不需要 → 输出：不需要
 
@@ -141,50 +150,39 @@ def agent_run(user_input, account, token, model, kb_content, file_content):
     thoughts.append(f"✅ 判断结果：{judge_ans}")
     st.session_state.agent_thoughts = thoughts
 
-    # 2. 需要 → 自动调用浏览器
     if "需要" in judge_ans:
-        thoughts.append("🌍 准备提取目标网址...")
+        thoughts.append("🔗 提取目标网址...")
         st.session_state.agent_thoughts = thoughts
 
-        url_prompt = f"从问题中提取网址，没有就生成必应搜索链接。只输出链接：{user_input}"
+        url_prompt = f"提取问题中的网址，没有就生成必应搜索链接。只输出链接：{user_input}"
         url, _ = cf_ai(url_prompt, account, token, model)
         if not url.startswith("http"):
             url = f"https://www.bing.com/search?q={urllib.parse.quote(user_input)}"
 
-        thoughts.append(f"🔗 目标网址：{url}")
+        thoughts.append(f"🌍 访问：{url}")
         st.session_state.agent_thoughts = thoughts
 
-        thoughts.append("🚀 调用无头浏览器读取内容...")
+        # 调用 Cloudflare 官方无头浏览器
+        thoughts.append("🚀 调用 CF 无头浏览器读取内容...")
         st.session_state.agent_thoughts = thoughts
-        web_content = browser_get_content(url)
+        content = cf_browser_fetch(url, account, token)
 
-        thoughts.append("📷 调用无头浏览器截图...")
+        thoughts.append("📷 调用 CF 无头浏览器截图...")
         st.session_state.agent_thoughts = thoughts
-        screenshot = browser_get_screenshot(url)
+        img = cf_browser_screenshot(url, account, token)
 
-        thoughts.append("📝 总结网页内容...")
+        # 总结
+        thoughts.append("📝 生成回答...")
         st.session_state.agent_thoughts = thoughts
-
-        final_prompt = f"""
-根据网页内容回答问题，简洁准确。
-网页内容：{web_content}
-问题：{user_input}
-"""
+        final_prompt = f"网页内容：{content}\n问题：{user_input}\n简洁回答："
         ans, raw_json = cf_ai(final_prompt, account, token, model)
-        ans += f"\n\n🖼️ 截图：{screenshot}\n🔗 来源：{url}"
-        thoughts.append("✅ 完成！")
-        st.session_state.agent_thoughts = thoughts
+        ans += f"\n\n🖼️ 截图：{img}\n🔗 来源：{url}"
         return ans, raw_json
 
-    # 3. 不需要 → 本地回答
     else:
-        thoughts.append("💡 使用本地知识回答...")
+        thoughts.append("💡 直接回答...")
         st.session_state.agent_thoughts = thoughts
-        context = f"知识库：{kb_content}\n文件：{file_content}"
-        final_prompt = f"{context}\n问题：{user_input}"
-        ans, raw_json = cf_ai(final_prompt, account, token, model)
-        thoughts.append("✅ 完成！")
-        st.session_state.agent_thoughts = thoughts
+        ans, raw_json = cf_ai(user_input, account, token, model)
         return ans, raw_json
 
 # ===================== 界面 =====================
@@ -192,7 +190,7 @@ st.markdown("""
 <link rel="stylesheet" href="https://cdn.mdui.org/css/mdui.min.css">
 <div class="mdui-appbar mdui-color-blue-600">
   <div class="mdui-toolbar mdui-container">
-    <span class="mdui-typo-headline">🤖 Kzz AI Agent（自主调用浏览器）</span>
+    <span class="mdui-typo-headline">🤖 Kzz AI Agent（CF官方无头浏览器）</span>
   </div>
 </div>
 <style>
@@ -210,9 +208,6 @@ with st.sidebar:
     st.title("⚙️ 设置")
     st.text_input("Account ID", key="input_id", type="password")
     st.text_input("API Token", key="input_token", type="password")
-    st.title("📚 知识库")
-    kb1 = st.text_input("链接1")
-    kb2 = st.text_input("链接2")
 
 # ===================== 主界面 =====================
 st.markdown('<div class="main">', unsafe_allow_html=True)
@@ -228,7 +223,7 @@ with col2:
 
 custom_model = st.text_input("自定义模型", placeholder="模型名", label_visibility="collapsed") if model_sel == "自定义模型" else model_sel
 
-# --- 【Agent 思考面板】---
+# 思考面板
 if st.session_state.agent_thoughts:
     with st.container():
         st.markdown('<div class="thought-box">', unsafe_allow_html=True)
@@ -246,7 +241,7 @@ for msg in st.session_state.messages:
         st.markdown(f'<div class="bot-msg">{msg["content"]}</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-prompt = st.text_input("消息", placeholder="输入问题，AI 会自主决策是否打开网页...", label_visibility="collapsed")
+prompt = st.text_input("消息", placeholder="输入问题，AI 自动调用 Cloudflare 无头浏览器...", label_visibility="collapsed")
 
 # ===================== 发送 =====================
 if st.button("🚀 发送", use_container_width=True) and prompt:
@@ -255,9 +250,7 @@ if st.button("🚀 发送", use_container_width=True) and prompt:
     used_model = custom_model
 
     with st.spinner(""):
-        kb_content = load_kb(kb1, kb2)
-        file_content = st.session_state.file_content
-        ans, raw_json = agent_run(prompt, account, token, used_model, kb_content, file_content)
+        ans, raw_json = agent_run(prompt, account, token, used_model)
 
     st.session_state.messages.append({"role": "assistant", "content": ans})
     st.rerun()
